@@ -52,9 +52,11 @@ class VehicleApiIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.plate").value("C456XYZ"))
                 .andExpect(jsonPath("$.ownerName").value("Ana Perez"));
 
-        try (var c = owner(); var st = c.createStatement();
-             ResultSet rs = st.executeQuery("select concat_ws('|', vin, plate, owner_name, vin_enc, plate_enc, owner_name_enc), "
-                     + "dek_wrapped is not null, vin_bidx is not null from vehicles where id = '" + id + "'")) {
+        try (var c = owner(); var ps = c.prepareStatement(
+                "select concat_ws('|', vin, plate, owner_name, vin_enc, plate_enc, owner_name_enc), "
+                        + "dek_wrapped is not null, vin_bidx is not null from vehicles where id = ?")) {
+            ps.setObject(1, UUID.fromString(id));
+            ResultSet rs = ps.executeQuery();
             assertThat(rs.next()).isTrue();
             assertThat(rs.getString(1)).doesNotContain("1HGCM82633A004352", "C456XYZ", "Ana Perez");
             assertThat(rs.getBoolean(2)).isTrue();

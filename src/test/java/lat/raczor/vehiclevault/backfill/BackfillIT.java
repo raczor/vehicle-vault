@@ -40,8 +40,10 @@ class BackfillIT extends AbstractIntegrationTest {
         }
     }
 
-    private long count(String where) throws Exception {
-        try (var c = owner(); var st = c.createStatement(); ResultSet rs = st.executeQuery("select count(*) from vehicles where " + where)) {
+    private long count(String where, Object... params) throws Exception {
+        try (var c = owner(); var ps = c.prepareStatement("select count(*) from vehicles where " + where)) {
+            for (int i = 0; i < params.length; i++) ps.setObject(i + 1, params[i]);
+            ResultSet rs = ps.executeQuery();
             rs.next();
             return rs.getLong(1);
         }
@@ -52,16 +54,18 @@ class BackfillIT extends AbstractIntegrationTest {
         UUID tenant = UUID.randomUUID(), legacy = UUID.randomUUID();
         seedLegacy(legacy, tenant, "legacyvin0000001", "P123ABC", "Legacy Owner");
         for (int i = 0; i < 20; i++) seedLegacy(UUID.randomUUID(), tenant, "FILLVIN" + String.format("%09d", i), null, null);
-        assertThat(count("encrypted_at is null and tenant_id = '" + tenant + "'")).isEqualTo(21);
+        assertThat(count("encrypted_at is null and tenant_id = ?", tenant)).isEqualTo(21);
 
         BackfillService svc = service();
         assertThat(svc.run()).isGreaterThanOrEqualTo(21);
 
-        assertThat(count("encrypted_at is null and tenant_id = '" + tenant + "'")).isZero();
-        assertThat(count("tenant_id = '" + tenant + "' and (vin is not null or plate is not null or owner_name is not null)")).isZero();
+        assertThat(count("encrypted_at is null and tenant_id = ?", tenant)).isZero();
+        assertThat(count("tenant_id = ? and (vin is not null or plate is not null or owner_name is not null)", tenant)).isZero();
 
-        try (var c = owner(); var st = c.createStatement();
-             ResultSet rs = st.executeQuery("select dek_wrapped, plate_enc, owner_name_enc, vin_bidx from vehicles where id = '" + legacy + "'")) {
+        try (var c = owner(); var ps = c.prepareStatement(
+                "select dek_wrapped, plate_enc, owner_name_enc, vin_bidx from vehicles where id = ?")) {
+            ps.setObject(1, legacy);
+            ResultSet rs = ps.executeQuery();
             rs.next();
             var key = cipher.openRowKey(rs.getString(1), tenant, legacy);
             assertThat(key.decrypt(rs.getString(2))).isEqualTo("P123ABC");
@@ -75,14 +79,17 @@ class BackfillIT extends AbstractIntegrationTest {
     @Test
     void aRowThatCannotBeMigratedIsSkippedAndStaysPending() throws Exception {
         UUID tenant = UUID.randomUUID(), bad = UUID.randomUUID(), good = UUID.randomUUID();
-        try (var c = owner(); var st = c.createStatement()) {
-            st.execute("insert into vehicles (id, tenant_id, make, model, year, vin) values ('" + bad + "','" + tenant + "','x','y',2000,null)");
+        try (var c = owner(); var ps = c.prepareStatement(
+                "insert into vehicles (id, tenant_id, make, model, year, vin) values (?, ?, 'x', 'y', 2000, null)")) {
+            ps.setObject(1, bad);
+            ps.setObject(2, tenant);
+            ps.executeUpdate();
         }
         seedLegacy(good, tenant, "GOODVIN0000000001", "G1", "Good");
 
         service().run();
 
-        assertThat(count("id = '" + bad + "' and encrypted_at is null")).as("poison row stays pending").isEqualTo(1);
-        assertThat(count("id = '" + good + "' and encrypted_at is not null")).as("others still migrate").isEqualTo(1);
+        assertThat(count("id = ? and encrypted_at is null", bad)).as("poison row stays pending").isEqualTo(1);
+        assertThat(count("id = ? and encrypted_at is not null", good)).as("others still migrate").isEqualTo(1);
     }
 }
