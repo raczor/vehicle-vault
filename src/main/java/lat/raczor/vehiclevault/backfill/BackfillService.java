@@ -34,7 +34,7 @@ public class BackfillService {
     private final BlindIndex blindIndex;
     private final VaultProperties.Backfill cfg;
 
-    BackfillService(JdbcClient jdbc, TransactionTemplate tx, FieldCipher cipher, BlindIndex blindIndex, VaultProperties props) {
+    public BackfillService(JdbcClient jdbc, TransactionTemplate tx, FieldCipher cipher, BlindIndex blindIndex, VaultProperties props) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.cipher = cipher;

@@ -65,3 +65,18 @@ Expand, migrate, contract:
 - `JWT_SECRET` and `BLIND_INDEX_KEY` have no defaults: the app refuses to start without them. The dev values live in `application-dev.yml`, which only the `dev` profile loads.
 - If a deploy is interrupted during `CREATE INDEX CONCURRENTLY`, Postgres leaves an INVALID index and `IF NOT EXISTS` will not rebuild it. Check `pg_index.indisvalid` and drop it before retrying.
 - Backfill rows that cannot be migrated (for example a NULL VIN) are logged and skipped; they stay pending and block the contract step.
+
+## Tests and CI
+
+```bash
+mvn test      # unit tests, no Docker
+mvn verify    # + Testcontainers ITs against real Postgres and floci (RLS, authz, encryption, backfill)
+```
+
+On macOS with Colima, point Testcontainers at its socket first:
+
+```bash
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+```
+
+GitHub Actions: `ci.yml` (`mvn verify`), `codeql.yml` (CodeQL, `security-extended`), `dependency-review.yml` (blocks PRs adding high-severity vulnerable dependencies), and Dependabot for Maven, Docker and Actions. Secret scanning and push protection are repository settings.
