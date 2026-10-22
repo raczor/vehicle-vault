@@ -1,0 +1,50 @@
+services:
+  floci:
+    image: floci/floci:latest
+    ports: ["127.0.0.1:4566:4566"]
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: vault
+      POSTGRES_USER: vault_owner        # bootstrap superuser: owns the schema, runs Flyway
+      POSTGRES_PASSWORD: vault_owner_dev
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      - ./docker/initdb-roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault_owner -d vault"]
+      interval: 3s
+      retries: 20
+
+  app: &app
+    build: .
+    image: vehicle-vault:local
+    depends_on:
+      postgres: { condition: service_healthy }
+      floci: { condition: service_started }
+    environment: &appenv
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL: jdbc:postgresql://postgres:5432/vault
+      AWS_ENDPOINT_URL: http://floci:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      KMS_BOOTSTRAP: "true"            # creates the key alias in floci; in AWS the key is provisioned by IaC
+    ports: ["127.0.0.1:8080:8080"]
+
+  # One-off job: docker compose --profile backfill run --rm backfill
+  backfill:
+    <<: *app
+    profiles: ["backfill"]
+    ports: []
+    environment:
+      <<: *appenv
+      SPRING_PROFILES_ACTIVE: dev,backfill
+      KMS_BOOTSTRAP: "false"           # the app service owns key bootstrap
+      DB_USER: backfill_user           # BYPASSRLS, only used here
+      DB_PASSWORD: backfill_user_dev
+
+volumes:
+  pgdata:

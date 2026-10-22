@@ -1,0 +1,29 @@
+spring:
+  application.name: vehicle-vault
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/vault}
+    username: ${DB_USER:app_user}
+    password: ${DB_PASSWORD:app_user_dev}
+  flyway:
+    # Migrations run as the schema owner; the app itself connects as app_user (subject to RLS).
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/vault}
+    user: ${FLYWAY_USER:vault_owner}
+    password: ${FLYWAY_PASSWORD:vault_owner_dev}
+    # Required for CREATE INDEX CONCURRENTLY: otherwise Flyway's own open lock transaction blocks the index build.
+    postgresql.transactional-lock: false
+  jackson.default-property-inclusion: non_null
+
+vault:
+  kms:
+    endpoint: ${AWS_ENDPOINT_URL:}
+    region: ${AWS_REGION:us-east-1}
+    key-alias: ${KMS_KEY_ALIAS:alias/vehicle-vault-pii}
+    bootstrap: ${KMS_BOOTSTRAP:false}
+  # No defaults here on purpose: startup fails if these are unset. Dev values live in application-dev.yml.
+  blind-index-key: ${BLIND_INDEX_KEY:}
+  jwt-secret: ${JWT_SECRET:}
+  backfill:
+    batch-size: ${BACKFILL_BATCH_SIZE:100}
+    pause-ms: ${BACKFILL_PAUSE_MS:200}
+
+management.endpoints.web.exposure.include: health

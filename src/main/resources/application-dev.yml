@@ -1,0 +1,4 @@
+# Local development only. Never activate the dev profile in a real deployment.
+vault:
+  blind-index-key: ZGV2LW9ubHktYmxpbmQtaW5kZXgta2V5LTMyLWJ5dGVz
+  jwt-secret: dev-only-secret-change-me-0123456789abcdef
