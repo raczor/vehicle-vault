@@ -10,3 +10,5 @@ target/
 *.tfstate.*
 *.tfvars
 crash.log
+.terragrunt-cache/
+.tf-plugin-cache/
