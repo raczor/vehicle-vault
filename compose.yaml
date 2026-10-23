@@ -46,5 +46,35 @@ services:
       DB_USER: backfill_user           # BYPASSRLS, only used here
       DB_PASSWORD: backfill_user_dev
 
+  # --- "aws" mode: the same service against what Terraform built in floci (RDS, KMS key, Secrets Manager). ---
+  # export COMPOSE_FILE=compose.yaml:compose.aws.yaml   (adds the Docker socket floci needs for RDS)
+  # docker compose up -d floci && (cd infra/envs/local && tofu apply) && python3 scripts/rds_bootstrap.py
+  # docker compose --profile aws up -d --build app-aws
+  app-aws:
+    <<: *app
+    profiles: ["aws"]
+    depends_on:
+      floci: { condition: service_started }
+    environment:
+      <<: *appenv
+      DB_URL: jdbc:postgresql://floci:7001/vault   # floci proxies the RDS container on 7001
+      DB_SECRET_ID: vehicle-vault/db/app_user      # credentials come from Secrets Manager, not env
+      FLYWAY_SECRET_ID: vehicle-vault/db/owner
+      KMS_BOOTSTRAP: "false"                       # the key and alias are Terraform's
+      KMS_KEY_ALIAS: alias/vehicle-vault-pii
+
+  backfill-aws:
+    <<: *app
+    profiles: ["aws-backfill"]
+    ports: []
+    depends_on:
+      floci: { condition: service_started }
+    environment:
+      <<: *appenv
+      SPRING_PROFILES_ACTIVE: dev,backfill
+      DB_URL: jdbc:postgresql://floci:7001/vault
+      DB_SECRET_ID: vehicle-vault/db/backfill_user
+      KMS_BOOTSTRAP: "false"
+
 volumes:
   pgdata:

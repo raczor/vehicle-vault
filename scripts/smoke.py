@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """End-to-end check against the running compose stack: encryption, RLS, authz, and the legacy backfill.
 
-Usage: docker compose up -d --build && python3 scripts/smoke.py
+Usage:
+  docker compose up -d --build && python3 scripts/smoke.py          # plain compose Postgres + app-managed KMS key
+  python3 scripts/smoke.py --aws                                     # Terraform-built RDS + KMS + Secrets in floci
 """
+import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -40,7 +44,27 @@ def token(tenant, roles):
     return http("GET", f"/dev/token?tenant={tenant}&roles={roles}")[1]
 
 
+AWS = False
+_creds = {}
+
+
+def _aws_creds(role):
+    """Fetch each DB credential from Secrets Manager once per run."""
+    if role not in _creds:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import rds_bootstrap as rb
+        _creds[role] = rb.secret("vehicle-vault/db/" + ("owner" if role == "vault_owner" else role))
+    return _creds[role]
+
+
 def sql(query, role="vault_owner"):
+    if AWS:  # floci RDS container, passwords from Secrets Manager
+        creds = _aws_creds(role)
+        out = subprocess.run(
+            ["docker", "run", "--rm", "-e", f"PGPASSWORD={creds['password']}", "postgres:17", "psql",
+             "-h", "host.docker.internal", "-p", "7001", "-U", creds["username"], "-d", "vault", "-At", "-c", query],
+            capture_output=True, text=True, check=True)
+        return out.stdout.strip()
     out = subprocess.run(
         ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", role, "-d", "vault", "-At", "-c", query],
         cwd=ROOT, capture_output=True, text=True, check=True)
@@ -96,7 +120,8 @@ def main():
     check(f"backfill has work to do ({pending} rows)", pending == 251)
 
     # Backfill
-    subprocess.run(["docker", "compose", "--profile", "backfill", "run", "--rm", "backfill"], cwd=ROOT, check=True)
+    job = ["--profile", "aws-backfill", "run", "--rm", "backfill-aws"] if AWS else ["--profile", "backfill", "run", "--rm", "backfill"]
+    subprocess.run(["docker", "compose", *job], cwd=ROOT, check=True)
     check("backfill left nothing pending", sql("select count(*) from vehicles where encrypted_at is null") == "0")
     check("backfill nulled all plaintext",
           sql("select count(*) from vehicles where vin is not null or plate is not null or owner_name is not null") == "0")
@@ -112,4 +137,9 @@ def main():
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--aws", action="store_true", help="target the Terraform-built stack in floci")
+    AWS = ap.parse_args().aws
+    if AWS:  # same override the README uses; without it compose would recreate floci and wipe its state
+        os.environ["COMPOSE_FILE"] = "compose.yaml:compose.aws.yaml"
     sys.exit(main())

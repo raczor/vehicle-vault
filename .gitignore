@@ -3,3 +3,10 @@ target/
 *.iml
 .idea/
 .DS_Store
+
+# OpenTofu / Terraform: state holds generated DB passwords, never commit it
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

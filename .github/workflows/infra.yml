@@ -1,0 +1,24 @@
+name: Infra
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        env: [local, aws]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.13.2
+      - run: tofu fmt -check -recursive infra
+      - run: tofu -chdir=infra/envs/${{ matrix.env }} init -backend=false -input=false
+      - run: tofu -chdir=infra/envs/${{ matrix.env }} validate
