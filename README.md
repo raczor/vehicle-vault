@@ -41,13 +41,13 @@ curl -s -XPOST localhost:8080/api/vehicles -H "Authorization: Bearer $T" -H 'Con
 
 ## How each piece works
 
-**Encryption** (`crypto/FieldCipher`). Sensitive fields: VIN, plate, owner name. Each row gets its own data key from KMS `GenerateDataKey`; the wrapped key is stored in `dek_wrapped`, fields are AES-GCM encrypted with it. The KMS encryption context and the GCM AAD both carry `tenant` and `vehicle` (row id), so ciphertext moved to another row or tenant fails to decrypt. Unwrapped keys sit in a bounded in-memory LRU so a list of N rows is not N KMS calls. Users without `vehicle:read-pii` never trigger a decrypt.
+**Encryption** (`crypto/PiiCipher`). Sensitive fields (VIN, plate, owner name) are encrypted with the [AWS Encryption SDK](https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/introduction.html) instead of hand-written crypto. Each row is one self-describing, versioned message stored in `pii_enc`: the SDK asks KMS for a data key (`GenerateDataKey`), encrypts locally with AES-256-GCM, and embeds the wrapped key, the algorithm and the encryption context. The context is `{tenant, vehicle}`; the SDK authenticates it and checks it on decrypt, so a message copied to another row or tenant fails. The client uses the `RequireEncryptRequireDecrypt` commitment policy and an unsigned committing suite (the default suite adds a third context key for signing, which would not match the IAM condition). Users without `vehicle:read-pii` never trigger a decrypt.
 
 **Lookup by VIN** (`crypto/BlindIndex`). `vin_bidx` is HMAC-SHA256 over `tenant:VIN`, so exact-match search works without decrypting anything and the same VIN hashes differently per tenant.
 
-**Row-level security** (`V4__vehicles_rls.sql`, `vehicle/TenantSession`). The service connects as `app_user`, which does not own the table and has no `BYPASSRLS`. Each transaction starts with `set_config('app.tenant_id', ..., true)`; the policy filters on it. The SQL has no `WHERE tenant_id = ...` on purpose. With no tenant set the policy matches nothing (fails closed).
+**Row-level security** (`V4__vehicles_rls.sql`, `tenant/TenantContext`). The service connects as `app_user`, which does not own the table and has no `BYPASSRLS`. A custom transaction manager (`tenant/TenantBindingTransactionManager`) runs `set_config('app.tenant_id', ..., true)` as every transaction begins, so no service method can forget it; the policy filters on it. The SQL has no `WHERE tenant_id = ...` on purpose. With no tenant set the policy matches nothing (fails closed).
 
-**Authorization** (`authz/`). Controllers only ask `@pdp.allowed(authentication, '<permission>')`. The role to permission map lives in one class behind the `PolicyDecisionPoint` interface; replace the implementation to call OPA, Cedar or a central authz service. Local JWTs are HS256; swap the decoder for your IdP's issuer URI in `SecurityConfig`.
+**Authorization** (`authz/`). Controllers only ask `@pdp.allowed(authentication, '<permission>')`. The role to permission map lives in one class behind the `PolicyDecisionPoint` interface; replace the implementation to call OPA, Cedar or a central authz service. Local JWTs are HS256 with a shared secret. Set `OIDC_JWK_SET_URI` (and `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_ROLES_CLAIM`) to validate tokens against an identity provider's public keys instead; the shared secret is then ignored. Tested against a local JWKS server, not a real identity provider.
 
 ## Zero-downtime backfill
 
@@ -114,8 +114,8 @@ Run the whole thing locally:
 export COMPOSE_FILE=compose.yaml:compose.aws.yaml   # opt-in: mounts the Docker socket so floci can start RDS
 docker compose up -d floci
 (cd infra/terragrunt/local && terragrunt run --all apply)   # key, roles, policies, VPC, RDS, secrets
-python3 scripts/rds_bootstrap.py                    # creates app_user / backfill_user with the secret passwords
-docker compose --profile aws up -d --build app-aws  # Flyway creates the tables on that RDS instance
+python3 scripts/rds_bootstrap.py                    # creates app_user / backfill_user, then runs the Flyway migrate job
+docker compose --profile aws up -d --build app-aws  # the service itself does not migrate
 python3 scripts/smoke.py --aws                      # the same 18 end-to-end checks, against this stack
 ```
 
@@ -123,13 +123,43 @@ Useful variations: `terragrunt run --all plan`, `terragrunt run --all destroy`, 
 
 What each layer teaches:
 
-- **Key policy vs IAM policy.** KMS needs *both* to allow an action. The key policy (`modules/kms`) does three things: delegates to IAM (`EnableIamPolicies`), hard-denies the admin role any cryptographic use (`AdminsCannotUseTheKey`, separation of duties), and denies `Decrypt`/`GenerateDataKey` when no encryption context is sent (`RequireEncryptionContext`). The IAM policy (`modules/app_access`) gives the service only those two actions, on that one key, and only when the context keys are exactly `tenant` and `vehicle`, the same keys `FieldCipher` sends.
+- **Key policy vs IAM policy.** KMS needs *both* to allow an action. The key policy (`modules/kms`) does three things: delegates to IAM (`EnableIamPolicies`), hard-denies the admin role any cryptographic use (`AdminsCannotUseTheKey`, separation of duties), and denies `Decrypt`/`GenerateDataKey` when no encryption context is sent (`RequireEncryptionContext`). The IAM policy (`modules/app_access`) gives the service only those two actions, on that one key, and only when the context keys are exactly `tenant` and `vehicle`, the same keys `PiiCipher` sends.
 - **Two keys.** The PII key encrypts fields. A separate key encrypts the RDS volume and snapshots. Compromising or losing one does not affect the other.
 - **Terraform owns infrastructure, Flyway owns schema.** Terraform creates the instance and credentials; the `vehicles` table, indexes and RLS policy come from `src/main/resources/db/migration` when the app starts. Postgres roles are applied by `scripts/rds_bootstrap.py` (floci) or `docker/initdb-roles.sql` (plain compose).
-- **Credentials from Secrets Manager.** Terraform generates the passwords (`random_password`) and stores them as JSON secrets, one per role. With `DB_SECRET_ID` / `FLYWAY_SECRET_ID` set, the app reads them at startup (`SecretsManagerEnvironmentPostProcessor`), which is exactly what the `ReadOwnSecrets` IAM statement permits. Note the state file also contains the passwords: in real use put state in an encrypted remote backend.
+- **Credentials from Secrets Manager.** Terraform generates the passwords (`random_password`) and stores them as JSON secrets, one per role. With `DB_SECRET_ID` set, the app reads its own (`app_user`) secret at startup (`SecretsManagerEnvironmentPostProcessor`), which is exactly what the `ReadOwnSecrets` IAM statement permits. Note the state file also contains the passwords: in real use put state in an encrypted remote backend.
 
 **What floci does NOT do** (so you do not learn the wrong lesson): it stores key policies and IAM policies but does not enforce them. A `GenerateDataKey` without an encryption context succeeds locally and would be denied by real AWS. Treat the local stack as a way to check that the resources and the app wiring work, and use real AWS (or the IAM policy simulator) to verify that permissions deny what they should. `envs/aws` is validated in CI but never applied by this repo.
 
 Before pointing the service at real RDS: the parameter group sets `rds.force_ssl=1`, so the JDBC URL needs `?sslmode=require` (or `verify-full` with the RDS CA bundle). Floci does not enforce TLS, so the local stack will not warn you. The app security group also needs outbound 443 to KMS and Secrets Manager (or VPC endpoints); only the 5432 path to the database is created here.
 
-Who reads which secret: the `app` role's IAM policy grants only the `app_user` secret. The local `app-aws` service also reads the `owner` secret so Flyway can migrate at startup, which is a shortcut. In real AWS run migrations as a separate pipeline step or job with its own role allowed to read `owner`, and give the one-off backfill job its own role for the `backfill_user` secret. Neither is created here.
+Who reads which secret: the `app` role's IAM policy grants only the `app_user` secret, and that is all the service reads. Migrations run as a separate job (the `migrate` compose service, or `scripts/rds_bootstrap.py` for floci RDS) with the owner credentials. In real AWS give that job and the one-off backfill job their own roles for the `owner` and `backfill_user` secrets; neither role is created here.
+
+## Architecture: what we have and what is missing
+
+| Piece | Status | Where it stands |
+|-------|--------|-----------------|
+| Field encryption | Have | AWS Encryption SDK, committing suite, encryption context |
+| Tenant isolation | Have | Postgres RLS, non-owner role, bound per transaction automatically, fails closed |
+| Authentication | Partial | OIDC mode (JWKS + issuer) tested locally; no real identity provider wired in |
+| Authorization | Partial | One permission interface and role map in code; a policy engine (OPA, Cedar, Verified Permissions) is the next step |
+| Key management | Have | Two keys, rotation on, key-admin cannot use the key, context required by policy |
+| Migrations | Have | Separate Flyway job as the schema owner; expand, migrate, contract |
+| Infrastructure as code | Partial | Validated in CI; state is local and nothing plans or applies from CI |
+| Audit | Partial | Structured `AUDIT` log lines only; not shipped, not tamper-resistant |
+| Database credentials | Partial | Read from Secrets Manager at startup; no rotation |
+| Data key caching | Missing | Every decrypting read is one KMS `Decrypt` (50 rows is 50 calls) |
+
+Not built here, and called out so nobody assumes they exist:
+
+- **Rotate DB passwords:** Secrets Manager rotation on a schedule, plus a restart or periodic re-read in the service.
+- **Rotate the blind-index key:** requires recomputing `vin_bidx` for every row, i.e. another backfill job.
+- **Plan and apply from CI:** `plan` on each PR, `apply` from a protected pipeline with an assumed role, encrypted remote state with locking, drift detection, policy scanning.
+- **Audit shipping and alerting:** write-once storage for the `AUDIT` lines and CloudTrail, alarms on denied KMS calls and unusual PII-read volume.
+- **Network and database hardening:** VPC endpoints, IAM database authentication, Multi-AZ, tested restores, TLS in the JDBC URL.
+- **Data lifecycle:** retention and erasure, including backups.
+- **Supply chain:** image signing and an SBOM (CodeQL and dependency review are in place).
+- **Load and failure testing:** KMS quotas and what happens when KMS is unreachable.
+
+Note: the `V2` migration was rewritten (one `pii_enc` column instead of four) before any deployment existed. After a release, schema changes must be new migrations, never edits. If you ran an earlier version locally, your compose database still has the old checksum and the migrate job will refuse to run: `docker compose down -v` resets it.
+
+Known limit: `PiiCipher` resolves the key alias to one key ARN at startup and decrypts only with that key. Annual KMS rotation keeps the same key id, so it is unaffected, but replacing the key with a new one behind the alias would leave old rows undecryptable until the cipher is taught to accept both ARNs.

@@ -11,8 +11,7 @@ import org.springframework.stereotype.Repository;
 public class VehicleRepository {
 
     private static final String COLS = """
-            id, tenant_id, make, model, year, created_at, dek_wrapped, vin_enc, plate_enc, owner_name_enc,
-            vin, plate, owner_name, encrypted_at""";
+            id, tenant_id, make, model, year, created_at, pii_enc, vin, plate, owner_name, encrypted_at""";
 
     private final JdbcClient jdbc;
 
@@ -22,12 +21,10 @@ public class VehicleRepository {
 
     void insert(VehicleRow v, String vinBidx) {
         jdbc.sql("""
-                insert into vehicles (id, tenant_id, make, model, year, dek_wrapped, vin_enc, plate_enc,
-                                      owner_name_enc, vin_bidx, encrypted_at)
-                values (:id, :tenant, :make, :model, :year, :dek, :vin, :plate, :owner, :bidx, now())""")
+                insert into vehicles (id, tenant_id, make, model, year, pii_enc, vin_bidx, encrypted_at)
+                values (:id, :tenant, :make, :model, :year, :pii, :bidx, now())""")
                 .param("id", v.id()).param("tenant", v.tenantId()).param("make", v.make())
-                .param("model", v.model()).param("year", v.year()).param("dek", v.dekWrapped())
-                .param("vin", v.vinEnc()).param("plate", v.plateEnc()).param("owner", v.ownerNameEnc())
+                .param("model", v.model()).param("year", v.year()).param("pii", v.piiEnc())
                 .param("bidx", vinBidx).update();
     }
 
@@ -50,8 +47,7 @@ public class VehicleRepository {
     private static VehicleRow map(java.sql.ResultSet rs, int n) throws java.sql.SQLException {
         return new VehicleRow(rs.getObject("id", UUID.class), rs.getObject("tenant_id", UUID.class),
                 rs.getString("make"), rs.getString("model"), rs.getInt("year"),
-                rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getString("dek_wrapped"),
-                rs.getString("vin_enc"), rs.getString("plate_enc"), rs.getString("owner_name_enc"),
+                rs.getObject("created_at", java.time.OffsetDateTime.class), rs.getString("pii_enc"),
                 rs.getString("vin"), rs.getString("plate"), rs.getString("owner_name"),
                 rs.getObject("encrypted_at", java.time.OffsetDateTime.class));
     }

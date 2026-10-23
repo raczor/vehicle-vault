@@ -92,10 +92,10 @@ def main():
     status, got = http("GET", f"/api/vehicles/{vid}", mgr_a)
     check("manager reads decrypted PII", status == 200 and got["plate"] == "C456XYZ" and got["ownerName"] == "Ana Perez")
 
-    stored = sql(f"select concat_ws('|', vin, plate, owner_name, vin_enc, plate_enc, owner_name_enc) from vehicles where id='{vid}'")
+    stored = sql(f"select concat_ws('|', vin, plate, owner_name, pii_enc) from vehicles where id='{vid}'")
     check("new row has no plaintext in the DB", all(s not in stored for s in ("1HGCM82633A004352", "C456XYZ", "Ana Perez")))
-    check("new row has ciphertext + wrapped key",
-          sql(f"select (vin_enc is not null and dek_wrapped is not null and vin_bidx is not null) from vehicles where id='{vid}'") == "t")
+    check("new row has one encrypted message + blind index",
+          sql(f"select (pii_enc is not null and vin_bidx is not null) from vehicles where id='{vid}'") == "t")
 
     # Blind index lookup
     status, found = http("GET", "/api/vehicles?vin=1HGCM82633A004352", mgr_a)

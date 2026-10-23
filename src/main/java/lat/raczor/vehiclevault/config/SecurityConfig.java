@@ -1,8 +1,6 @@
 package lat.raczor.vehiclevault.config;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
-import javax.crypto.spec.SecretKeySpec;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,9 +9,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
@@ -40,19 +36,17 @@ class SecurityConfig {
 
     @Bean
     JwtDecoder jwtDecoder(VaultProperties props) {
-        if (props.jwtSecret() == null || props.jwtSecret().getBytes(StandardCharsets.UTF_8).length < 32) {
-            throw new IllegalStateException("vault.jwt-secret (JWT_SECRET) must be set and at least 32 bytes");
-        }
-        var key = new SecretKeySpec(props.jwtSecret().getBytes(StandardCharsets.UTF_8), "HmacSHA256");
-        return NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256).build();
+        return JwtDecoderFactory.create(props);
     }
 
-    /** "roles" claim becomes ROLE_* authorities. */
+    /** The roles claim (default "roles", configurable for the identity provider) becomes ROLE_* authorities. */
     @Bean
-    JwtAuthenticationConverter jwtConverter() {
+    JwtAuthenticationConverter jwtConverter(VaultProperties props) {
+        String rolesClaim = props.oidc() == null || props.oidc().rolesClaim() == null || props.oidc().rolesClaim().isBlank()
+                ? "roles" : props.oidc().rolesClaim();
         var c = new JwtAuthenticationConverter();
         c.setJwtGrantedAuthoritiesConverter(jwt -> {
-            List<String> roles = jwt.getClaimAsStringList("roles");
+            List<String> roles = jwt.getClaimAsStringList(rolesClaim);
             return (roles == null ? List.<String>of() : roles).stream()
                     .<GrantedAuthority>map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList();
         });

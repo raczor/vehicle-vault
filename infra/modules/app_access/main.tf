@@ -18,6 +18,13 @@ data "aws_iam_policy_document" "app" {
     }
   }
 
+  # PiiCipher resolves the alias to the key ARN once at startup. DescribeKey takes no encryption context.
+  statement {
+    sid       = "DescribePiiKey"
+    actions   = ["kms:DescribeKey"]
+    resources = [var.pii_key_arn]
+  }
+
   dynamic "statement" {
     for_each = length(var.secret_arns) > 0 ? [1] : []
     content {

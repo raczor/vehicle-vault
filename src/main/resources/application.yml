@@ -22,6 +22,13 @@ vault:
   # No defaults here on purpose: startup fails if these are unset. Dev values live in application-dev.yml.
   blind-index-key: ${BLIND_INDEX_KEY:}
   jwt-secret: ${JWT_SECRET:}
+  oidc:
+    # Set for real deployments: tokens are then validated against the identity provider's public keys and
+    # JWT_SECRET is ignored. Leave empty only for local development.
+    jwk-set-uri: ${OIDC_JWK_SET_URI:}
+    issuer: ${OIDC_ISSUER:}
+    roles-claim: ${OIDC_ROLES_CLAIM:roles}
+    audience: ${OIDC_AUDIENCE:}
   backfill:
     batch-size: ${BACKFILL_BATCH_SIZE:100}
     pause-ms: ${BACKFILL_PAUSE_MS:200}
