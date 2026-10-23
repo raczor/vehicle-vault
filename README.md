@@ -8,6 +8,8 @@ Spring Boot 3 / Java 21 service that stores vehicles and protects their sensitiv
 
 Plus a **zero-downtime backfill** that migrates existing plaintext rows to the encrypted form while the service keeps serving traffic.
 
+Docs site (concepts like RLS and envelope encryption explained, plus the infra walkthrough): https://raczor.github.io/vehicle-vault/
+
 Everything runs locally with Docker; [floci](https://github.com/floci-io/floci) stands in for AWS KMS.
 
 ## Run it

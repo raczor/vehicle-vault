@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vehicle-vault | Docs</title>
+<meta name="description" content="How vehicle-vault protects sensitive vehicle data: KMS envelope encryption, Postgres row-level security, central authorization, zero-downtime backfill, and the OpenTofu infrastructure behind it.">
+<style>
+:root{
+  --bg:#fbfaf7; --surface:#ffffff; --text:#1d2433; --muted:#566074; --line:#e3e0d8;
+  --accent:#0b6b5c; --accent-soft:#e2f1ed; --warn:#9a5b00; --warn-soft:#fbf0dc; --code-bg:#f2f0ea;
+  --shadow:0 1px 2px rgba(20,25,40,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12161d; --surface:#1a202a; --text:#e6e9ef; --muted:#9aa5b8; --line:#2a3240;
+    --accent:#4fc3ad; --accent-soft:#17332e; --warn:#f0b35a; --warn-soft:#33281a; --code-bg:#222a36;
+    --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12161d; --surface:#1a202a; --text:#e6e9ef; --muted:#9aa5b8; --line:#2a3240;
+  --accent:#4fc3ad; --accent-soft:#17332e; --warn:#f0b35a; --warn-soft:#33281a; --code-bg:#222a36; --shadow:none;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
+code{background:var(--code-bg);padding:.1em .35em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--line);line-height:1.5}
+pre code{background:none;padding:0}
+header.top{border-bottom:1px solid var(--line);background:var(--surface)}
+.wrap{max-width:900px;margin:0 auto;padding:0 20px}
+.bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-block:14px}
+.brand{font-weight:700;letter-spacing:-.01em;margin-right:auto}
+nav.links{display:flex;gap:4px 14px;flex-wrap:wrap;font-size:.92rem}
+nav.links a{text-decoration:none;color:var(--muted)}
+nav.links a:hover{color:var(--accent)}
+button.theme{border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:.85rem}
+.hero{padding:52px 0 28px}
+.hero h1{font-size:clamp(2rem,5vw,2.9rem);line-height:1.1;margin:0 0 14px;letter-spacing:-.02em}
+.hero p{font-size:1.12rem;color:var(--muted);max-width:640px;margin:0}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.pill{background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:4px 12px;font-size:.85rem;font-weight:600}
+section{padding:34px 0;border-top:1px solid var(--line)}
+h2{font-size:1.55rem;margin:0 0 6px;letter-spacing:-.01em}
+h3{font-size:1.15rem;margin:0 0 6px}
+.lede{color:var(--muted);margin:0 0 22px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--shadow)}
+.card p{margin:.4em 0}
+.means{border-left:3px solid var(--accent);padding:2px 0 2px 14px;margin:10px 0}
+.means b{color:var(--accent)}
+.here{font-size:.88rem;color:var(--muted);margin-top:8px}
+.concept{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:0 0 16px;box-shadow:var(--shadow)}
+.concept h3 a{color:inherit;text-decoration:none}
+.callout{background:var(--warn-soft);border:1px solid var(--warn);border-radius:10px;padding:14px 16px;margin:16px 0;color:var(--text)}
+.callout b{color:var(--warn)}
+table{border-collapse:collapse;width:100%;font-size:.95rem;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--code-bg);font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+tr:last-child td{border-bottom:none}
+.scroll{overflow-x:auto}
+ol.steps{padding-left:20px}
+ol.steps li{margin:8px 0}
+figure{margin:18px 0}
+figure .diagram{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+figure svg{width:100%;min-width:640px;height:auto;display:block}
+figcaption{color:var(--muted);font-size:.88rem;margin-top:6px}
+.svg-box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.svg-accent{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.4}
+.svg-warn{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.4}
+.svg-text{fill:var(--text);font:600 13px system-ui,sans-serif}
+.svg-sub{fill:var(--muted);font:12px system-ui,sans-serif}
+.svg-line{stroke:var(--muted);stroke-width:1.4;fill:none}
+footer{padding:30px 0 50px;color:var(--muted);font-size:.9rem;border-top:1px solid var(--line)}
+.sr{position:absolute;left:-9999px}
+@media (max-width:560px){.hero{padding-top:36px}.concept{padding:16px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <span class="brand">vehicle-vault</span>
+    <nav class="links" aria-label="Sections">
+      <a href="#flow">Request flow</a>
+      <a href="#concepts">Concepts</a>
+      <a href="#run">Run it</a>
+      <a href="#infra">Infra</a>
+      <a href="#limits">Limits</a>
+      <a href="https://github.com/raczor/vehicle-vault">GitHub</a>
+    </nav>
+    <button class="theme" id="theme" type="button" aria-label="Toggle color theme">Theme</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <h1>Vehicle data that stays protected, even from the database.</h1>
+    <p>A small Spring Boot service that stores vehicles and shows four platform-security patterns working together, plus the infrastructure code that builds the AWS side. Everything runs locally with Docker.</p>
+    <div class="pills">
+      <span class="pill">AWS KMS field encryption</span>
+      <span class="pill">Postgres row-level security</span>
+      <span class="pill">Central authorization</span>
+      <span class="pill">Zero-downtime backfill</span>
+      <span class="pill">OpenTofu on floci</span>
+    </div>
+  </div>
+
+  <section id="flow">
+    <h2>Request flow</h2>
+    <p class="lede">What happens to one call, and where each protection sits.</p>
+    <figure>
+      <div class="diagram" tabindex="0" role="group" aria-label="Request flow diagram, scrolls sideways on small screens">
+      <svg viewBox="0 0 860 300" role="img" aria-labelledby="flow-t flow-d">
+        <title id="flow-t">Request flow through vehicle-vault</title>
+        <desc id="flow-d">A client sends a JWT. The service checks the signature, asks the policy decision point for a permission, binds the tenant to the database transaction, and uses KMS to unwrap a data key. Postgres row-level security filters rows by tenant.</desc>
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor" style="color:var(--muted)"/></marker></defs>
+        <rect class="svg-box" x="10" y="110" width="120" height="70" rx="10"/><text class="svg-text" x="70" y="141" text-anchor="middle">Client</text><text class="svg-sub" x="70" y="160" text-anchor="middle">sends a JWT</text>
+        <rect class="svg-accent" x="190" y="30" width="190" height="70" rx="10"/><text class="svg-text" x="285" y="60" text-anchor="middle">1. Authenticate</text><text class="svg-sub" x="285" y="80" text-anchor="middle">verify signature, read tenant</text>
+        <rect class="svg-accent" x="190" y="210" width="190" height="70" rx="10"/><text class="svg-text" x="285" y="240" text-anchor="middle">2. Authorize</text><text class="svg-sub" x="285" y="260" text-anchor="middle">policy decision point</text>
+        <rect class="svg-box" x="440" y="110" width="150" height="70" rx="10"/><text class="svg-text" x="515" y="141" text-anchor="middle">Service</text><text class="svg-sub" x="515" y="160" text-anchor="middle">encrypt / decrypt fields</text>
+        <rect class="svg-warn" x="650" y="30" width="190" height="70" rx="10"/><text class="svg-text" x="745" y="60" text-anchor="middle">3. AWS KMS</text><text class="svg-sub" x="745" y="80" text-anchor="middle">wraps / unwraps data keys</text>
+        <rect class="svg-warn" x="650" y="210" width="190" height="70" rx="10"/><text class="svg-text" x="745" y="240" text-anchor="middle">4. Postgres + RLS</text><text class="svg-sub" x="745" y="260" text-anchor="middle">only this tenant's rows</text>
+        <path class="svg-line" d="M130 135 L190 80" marker-end="url(#ar)"/>
+        <path class="svg-line" d="M285 100 L285 210" marker-end="url(#ar)"/>
+        <path class="svg-line" d="M380 240 L440 160" marker-end="url(#ar)"/>
+        <path class="svg-line" d="M590 130 L650 80" marker-end="url(#ar)"/>
+        <path class="svg-line" d="M590 160 L650 230" marker-end="url(#ar)"/>
+      </svg>
+      </div>
+      <figcaption>The service never sees another tenant's rows (the database refuses), and never holds a master key (KMS does).</figcaption>
+    </figure>
+  </section>
+
+  <section id="concepts">
+    <h2>Concepts, in plain words</h2>
+    <p class="lede">Each card says what the idea means, then where it lives in this repo.</p>
+
+    <article class="concept" id="rls">
+      <h3>Row-level security (RLS)</h3>
+      <div class="means"><b>What it means:</b> the database itself decides which rows a connection may see or change. Even if application code forgets a <code>WHERE tenant_id = ...</code>, Postgres still filters. A bug in the service becomes an empty result, not a data leak.</div>
+      <p>Each transaction first tells Postgres who is asking, then a policy on the table compares every row to that value:</p>
+<pre><code>select set_config('app.tenant_id', '&lt;tenant uuid&gt;', true);   -- true = this transaction only
+
+CREATE POLICY vehicles_tenant_isolation ON vehicles
+  USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);</code></pre>
+      <p>Three details make it hold up:</p>
+      <ul>
+        <li><b>The app connects as a role that does not own the table</b> (<code>app_user</code>). Table owners skip RLS unless it is forced (<code>FORCE ROW LEVEL SECURITY</code>), and superusers and <code>BYPASSRLS</code> roles skip it always, so the service must never connect as any of them.</li>
+        <li><b>It fails closed.</b> If no tenant is set, the setting is empty, the comparison is NULL, and no row matches.</li>
+        <li><b>One role is allowed to skip it on purpose.</b> The backfill job uses <code>backfill_user</code> (<code>BYPASSRLS</code>) because it must walk every tenant.</li>
+      </ul>
+      <p class="here">In this repo: <code>V4__vehicles_rls.sql</code>, <code>TenantSession.java</code>, and the "RLS fails closed" checks in the integration tests.</p>
+    </article>
+
+    <article class="concept" id="envelope">
+      <h3>Envelope encryption</h3>
+      <div class="means"><b>What it means:</b> never encrypt your data with the master key directly. Ask KMS for a fresh <i>data key</i>, encrypt the data with it locally, and store only the <i>wrapped</i> (KMS-encrypted) copy of that key next to the data. To read, ask KMS to unwrap it. The master key never leaves KMS.</div>
+      <ol class="steps">
+        <li>Create a vehicle: <code>GenerateDataKey</code> returns the key in plain and wrapped form.</li>
+        <li>Encrypt VIN, plate and owner name with AES-256-GCM using the plain key, then discard it.</li>
+        <li>Store the ciphertext and the wrapped key (<code>dek_wrapped</code>) in the same row.</li>
+        <li>Read: <code>Decrypt</code> unwraps the key, the service decrypts the fields. A small cache avoids one KMS call per row on lists.</li>
+      </ol>
+      <p>One data key per row limits the damage of any single key leaking to that row.</p>
+      <p class="here">In this repo: <code>FieldCipher.java</code>. Users without the <code>vehicle:read-pii</code> permission never trigger a decrypt at all.</p>
+    </article>
+
+    <article class="concept" id="context">
+      <h3>Encryption context</h3>
+      <div class="means"><b>What it means:</b> extra labels (here <code>tenant</code> and <code>vehicle</code>) that must match exactly at decrypt time. They are not secret, but they bind a ciphertext to the thing it belongs to. KMS records them in its audit logs.</div>
+      <p>The same two labels also go into the AES-GCM "additional authenticated data", so a ciphertext copied into another row or another tenant fails to decrypt. The IAM and key policies can require these labels, which turns "someone used the key with no context" into a denied, logged event.</p>
+      <p class="here">In this repo: <code>FieldCipher.context()</code>, plus the policy conditions in <code>infra/modules/kms</code> and <code>infra/modules/app_access</code>.</p>
+    </article>
+
+    <article class="concept" id="blind">
+      <h3>Blind index</h3>
+      <div class="means"><b>What it means:</b> a way to search encrypted data for an exact match without decrypting it. Store a keyed hash (HMAC) of the VIN in its own column; to search, hash the VIN you were given and compare hashes.</div>
+      <p>The hash includes the tenant id, so the same VIN looks different in each tenant. It only supports exact matches, not prefixes or fuzzy search, and the HMAC key must be kept secret and treated as long-lived.</p>
+      <p class="here">In this repo: <code>BlindIndex.java</code>, column <code>vin_bidx</code>.</p>
+    </article>
+
+    <article class="concept" id="authz">
+      <h3>Centralized authorization</h3>
+      <div class="means"><b>What it means:</b> code asks one place "is this caller allowed to do X?", and never checks roles itself. Roles map to permissions in a single policy class, so changing who can do what is one edit, and swapping in an external policy engine later does not touch the controllers.</div>
+<pre><code>@PreAuthorize("@pdp.allowed(authentication, 'vehicle:write')")</code></pre>
+      <table>
+        <thead><tr><th>Role</th><th>vehicle:read</th><th>vehicle:read-pii</th><th>vehicle:write</th></tr></thead>
+        <tbody>
+          <tr><td>ADMIN</td><td>yes</td><td>yes</td><td>yes</td></tr>
+          <tr><td>MANAGER</td><td>yes</td><td>yes</td><td>yes</td></tr>
+          <tr><td>VIEWER</td><td>yes</td><td>no</td><td>no</td></tr>
+        </tbody>
+      </table>
+      <p class="here">In this repo: <code>PolicyDecisionPoint</code>, <code>RolePermissionPolicy</code>. Authentication is a signed JWT carrying <code>tenant_id</code> and <code>roles</code>.</p>
+    </article>
+
+    <article class="concept" id="backfill">
+      <h3>Zero-downtime backfill</h3>
+      <div class="means"><b>What it means:</b> encrypting rows that already exist, while the service keeps running, with no maintenance window. The trick is to change the database in small steps that each work with both the old and new code.</div>
+      <ol class="steps">
+        <li><b>Expand.</b> Add the new nullable columns and build indexes with <code>CREATE INDEX CONCURRENTLY</code> so writes are never blocked. Old code is unaffected.</li>
+        <li><b>Dual-read deploy.</b> The new service writes encrypted data and reads either form. A row's <code>encrypted_at</code> being empty means "still plaintext".</li>
+        <li><b>Backfill.</b> A job encrypts old rows in small batches. Ciphertext is written and plaintext erased in one statement, guarded by <code>encrypted_at IS NULL</code>, so it is safe to run twice or in parallel. KMS calls happen outside any open transaction, so row locks last milliseconds.</li>
+        <li><b>Contract.</b> Only when nothing is pending, a manual script drops the plaintext columns. It refuses to run while any row is unencrypted.</li>
+      </ol>
+      <p class="here">In this repo: <code>V2</code> and <code>V3</code> migrations, <code>BackfillService.java</code>, <code>db/contract/drop_plaintext.sql</code>.</p>
+    </article>
+
+    <article class="concept" id="keypolicy">
+      <h3>Key policy vs IAM policy</h3>
+      <div class="means"><b>What it means:</b> KMS asks two questions and both must say yes. The <i>key policy</i> belongs to the key itself. IAM policies belong to the caller. A permission granted in only one place does nothing.</div>
+      <p>This repo's key policy has three statements:</p>
+      <ul>
+        <li><b>Let IAM decide.</b> Delegates everyday permissions to IAM policies.</li>
+        <li><b>Admins cannot use the key.</b> The role that manages the key is explicitly denied encrypt and decrypt. Whoever can change the key cannot read the data (separation of duties).</li>
+        <li><b>Context is required.</b> Any decrypt or data-key request without an encryption context is denied.</li>
+      </ul>
+      <p>The service's IAM policy then grants exactly two actions, <code>GenerateDataKey</code> and <code>Decrypt</code>, on one key, only when the context keys are <code>tenant</code> and <code>vehicle</code>. An explicit deny always beats an allow.</p>
+      <p class="here">In this repo: <code>infra/modules/kms</code>, <code>infra/modules/app_access</code>.</p>
+    </article>
+
+    <article class="concept" id="rotation">
+      <h3>Key rotation</h3>
+      <div class="means"><b>What it means:</b> KMS can replace the key's secret material every year. Old ciphertext still decrypts (KMS keeps old material), and new data uses the new material. You do not re-encrypt anything. Here it is switched on in Terraform.</div>
+    </article>
+
+    <article class="concept" id="secrets">
+      <h3>Secrets Manager</h3>
+      <div class="means"><b>What it means:</b> passwords live in a managed store, not in config files or environment variables. Terraform generates random database passwords and stores them as one secret per database role; the service reads only its own at startup, and IAM controls who may read which one.</div>
+      <p>Caveat: Terraform's state file also holds the generated passwords, so real deployments keep state in an encrypted remote backend.</p>
+    </article>
+
+    <article class="concept" id="ownership">
+      <h3>Who owns what: Terraform vs Flyway</h3>
+      <div class="means"><b>What it means:</b> Terraform builds infrastructure (the key, the database server, the network). Flyway migrations build the schema (tables, indexes, RLS policies) when the app starts. Mixing the two causes drift, so each owns its own layer.</div>
+    </article>
+  </section>
+
+  <section id="run">
+    <h2>Run it</h2>
+    <p class="lede">Needs Docker. On macOS, <code>brew install docker docker-compose colima &amp;&amp; colima start</code>.</p>
+<pre><code>docker compose up -d --build        # app + postgres + floci (local AWS emulator)
+python3 scripts/smoke.py            # 18 end-to-end checks, including the backfill
+mvn verify                          # unit tests + Testcontainers integration tests</code></pre>
+    <p>Try it by hand:</p>
+<pre><code>T=$(curl -s "localhost:8080/dev/token?tenant=$(uuidgen)&amp;roles=MANAGER")
+curl -s -XPOST localhost:8080/api/vehicles -H "Authorization: Bearer $T" \
+  -H 'Content-Type: application/json' \
+  -d '{"make":"Honda","model":"Civic","year":2021,"vin":"1HGCM82633A004352","plate":"C456XYZ","ownerName":"Ana Perez"}'</code></pre>
+    <p>Look at what the database really stores: the VIN, plate and name columns are unreadable ciphertext.</p>
+  </section>
+
+  <section id="infra">
+    <h2>Infrastructure walkthrough</h2>
+    <p class="lede">The AWS side is built with <a href="https://opentofu.org">OpenTofu</a> (same language as Terraform). The same modules apply to floci locally and to real AWS.</p>
+<pre><code>infra/
+  modules/
+    iam/          app role (the service) and key-admin role (manages, never uses)
+    kms/          key + alias, rotation on, three-statement key policy
+    app_access/   least-privilege IAM policies for those roles
+    network/      VPC, 2 private subnets, security groups (db reachable only from the app group)
+    database/     RDS Postgres 17, TLS-forcing parameter group, 3 Secrets Manager secrets
+  envs/
+    local/        floci endpoints, short deletion windows
+    aws/          real provider, 30-day key deletion window, deletion protection (validated only)</code></pre>
+    <ol class="steps">
+      <li><b>Start floci with RDS support.</b> <code>export COMPOSE_FILE=compose.yaml:compose.aws.yaml</code> then <code>docker compose up -d floci</code>. The override mounts the Docker socket so floci can start a real Postgres container.</li>
+      <li><b>Apply the infrastructure.</b> <code>cd infra/envs/local &amp;&amp; tofu init &amp;&amp; tofu apply</code>. Creates the key, roles, policies, network, database and secrets.</li>
+      <li><b>Create the database roles.</b> <code>python3 scripts/rds_bootstrap.py</code> reads the passwords from Secrets Manager and creates <code>app_user</code> and <code>backfill_user</code>.</li>
+      <li><b>Start the service against it.</b> <code>docker compose --profile aws up -d --build app-aws</code>. It reads its credentials from Secrets Manager, and Flyway creates the tables on the RDS instance.</li>
+      <li><b>Check it.</b> <code>python3 scripts/smoke.py --aws</code> runs the same 18 checks against this stack.</li>
+    </ol>
+    <p>Continuous integration runs <code>verify</code> (all tests), <code>tofu fmt</code> and <code>validate</code> for both environments, CodeQL analysis of the Java and the workflow files, and dependency review. <code>main</code> is protected by a ruleset that requires <code>verify</code>, both CodeQL analyses and dependency review, and blocks high-severity CodeQL alerts. The <code>tofu</code> checks only run when <code>infra/</code> changes, so they are not required.</p>
+  </section>
+
+  <section id="limits">
+    <h2>What this does not prove</h2>
+    <p class="lede">Read this before trusting the local stack for anything.</p>
+    <div class="callout"><b>floci does not enforce policies.</b> It stores key policies and IAM policies but does not evaluate them. A <code>GenerateDataKey</code> call without an encryption context succeeds locally, and real AWS would deny it. Use the local stack to check that resources and wiring work, and use real AWS or the IAM policy simulator to check that permissions deny what they should.</div>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Area</th><th>Checked locally</th><th>Not checked</th></tr></thead>
+      <tbody>
+        <tr><td>Encryption at rest</td><td>Ciphertext in the database, round trip, wrong-tenant fails</td><td>KMS key policy and IAM enforcement</td></tr>
+        <tr><td>Row-level security</td><td>Cross-tenant reads blocked, fails closed with no tenant</td><td>Behavior under a superuser or owner connection (by design they bypass it)</td></tr>
+        <tr><td>Authorization</td><td>Permission matrix with real signed tokens</td><td>An external identity provider</td></tr>
+        <tr><td>Backfill</td><td>251 rows migrated, idempotent, bad row skipped</td><td>Very large tables, real KMS latency and throttling</td></tr>
+        <tr><td>RDS</td><td>Instance, secrets and migrations on a floci-managed Postgres</td><td>TLS enforcement, Multi-AZ, backups, real networking</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Other known gaps: the local setup lets the service read the database owner secret so Flyway can migrate (production should run migrations as a separate job), the backfill job has no IAM role of its own yet, and the secrets use the default AWS-managed key instead of a customer-managed one.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Source and issues: <a href="https://github.com/raczor/vehicle-vault">github.com/raczor/vehicle-vault</a>. A learning project, not production-ready.</div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('theme');
+  try{var s=localStorage.getItem('theme'); if(s) root.setAttribute('data-theme',s);}catch(e){}
+  btn.addEventListener('click',function(){
+    var dark=root.getAttribute('data-theme')==='dark' ||
+      (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var next=dark?'light':'dark';
+    root.setAttribute('data-theme',next);
+    try{localStorage.setItem('theme',next);}catch(e){}
+  });
+})();
+</script>
+</body>
+</html>
