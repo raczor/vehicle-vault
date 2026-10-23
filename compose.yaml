@@ -18,13 +18,25 @@ services:
       interval: 3s
       retries: 20
 
+  # Schema changes run as their own job, as the schema owner. The service never holds owner credentials.
+  migrate:
+    image: flyway/flyway:11
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - ./src/main/resources/db/migration:/flyway/sql:ro
+    command: >-
+      -url=jdbc:postgresql://postgres:5432/vault -user=vault_owner -password=vault_owner_dev
+      -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false -connectRetries=10 migrate
+
   app: &app
     build: .
     image: vehicle-vault:local
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       floci: { condition: service_started }
     environment: &appenv
+      SPRING_FLYWAY_ENABLED: "false"     # migrations are the migrate job's business, not the service's
       SPRING_PROFILES_ACTIVE: dev
       DB_URL: jdbc:postgresql://postgres:5432/vault
       AWS_ENDPOINT_URL: http://floci:4566
@@ -49,6 +61,7 @@ services:
   # --- "aws" mode: the same service against what Terraform built in floci (RDS, KMS key, Secrets Manager). ---
   # export COMPOSE_FILE=compose.yaml:compose.aws.yaml   (adds the Docker socket floci needs for RDS)
   # docker compose up -d floci && (cd infra/terragrunt/local && terragrunt run --all apply) && python3 scripts/rds_bootstrap.py
+  # (rds_bootstrap.py creates the roles AND runs the Flyway job, like the migrate service above)
   # docker compose --profile aws up -d --build app-aws
   app-aws:
     <<: *app
@@ -59,7 +72,6 @@ services:
       <<: *appenv
       DB_URL: jdbc:postgresql://floci:7001/vault   # floci proxies the RDS container on 7001
       DB_SECRET_ID: vehicle-vault/db/app_user      # credentials come from Secrets Manager, not env
-      FLYWAY_SECRET_ID: vehicle-vault/db/owner
       KMS_BOOTSTRAP: "false"                       # the key and alias are Terraform's
       KMS_KEY_ALIAS: alias/vehicle-vault-pii
 

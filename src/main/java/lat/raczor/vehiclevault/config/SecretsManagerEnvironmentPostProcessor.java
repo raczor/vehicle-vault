@@ -15,8 +15,9 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
 
 /**
- * Optional: when DB_SECRET_ID / FLYWAY_SECRET_ID are set, database credentials are read from AWS Secrets Manager
- * at startup instead of plain env vars. The secret JSON is the one Terraform writes
+ * Optional: when DB_SECRET_ID is set, the service's database credentials are read from AWS Secrets Manager
+ * at startup instead of plain env vars. Only the service's own (app_user) secret is ever read here: schema
+ * migrations run as a separate job with the owner credentials. The secret JSON is the one Terraform writes
  * ({"username":..., "password":..., "host":..., "port":..., "dbname":...}); only username and password are used,
  * the JDBC URL still comes from DB_URL (inside a container network the secret's host is not the one to dial).
  * Needs secretsmanager:GetSecretValue on those secrets, which infra/modules/app_access grants.
@@ -26,21 +27,13 @@ public class SecretsManagerEnvironmentPostProcessor implements EnvironmentPostPr
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment env, SpringApplication app) {
         String dbSecret = env.getProperty("DB_SECRET_ID");
-        String flywaySecret = env.getProperty("FLYWAY_SECRET_ID");
-        if (dbSecret == null && flywaySecret == null) return;
+        if (dbSecret == null) return;
 
         Map<String, Object> props = new HashMap<>();
         try (SecretsManagerClient client = client(env)) {
-            if (dbSecret != null) {
-                JsonNode s = read(client, dbSecret);
-                props.put("spring.datasource.username", s.get("username").asText());
-                props.put("spring.datasource.password", s.get("password").asText());
-            }
-            if (flywaySecret != null) {
-                JsonNode s = read(client, flywaySecret);
-                props.put("spring.flyway.user", s.get("username").asText());
-                props.put("spring.flyway.password", s.get("password").asText());
-            }
+            JsonNode s = read(client, dbSecret);
+            props.put("spring.datasource.username", s.get("username").asText());
+            props.put("spring.datasource.password", s.get("password").asText());
         }
         env.getPropertySources().addFirst(new MapPropertySource("secretsManager", props));
     }

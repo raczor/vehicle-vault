@@ -5,7 +5,8 @@ import java.util.List;
 import java.util.UUID;
 import lat.raczor.vehiclevault.config.VaultProperties;
 import lat.raczor.vehiclevault.crypto.BlindIndex;
-import lat.raczor.vehiclevault.crypto.FieldCipher;
+import lat.raczor.vehiclevault.crypto.PiiCipher;
+import lat.raczor.vehiclevault.crypto.PiiCipher.Pii;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -26,15 +27,15 @@ public class BackfillService {
 
     private record Legacy(UUID id, UUID tenantId, String vin, String plate, String ownerName) {}
 
-    private record Encrypted(UUID id, String dek, String vin, String plate, String owner, String bidx) {}
+    private record Encrypted(UUID id, String piiEnc, String bidx) {}
 
     private final JdbcClient jdbc;
     private final TransactionTemplate tx;
-    private final FieldCipher cipher;
+    private final PiiCipher cipher;
     private final BlindIndex blindIndex;
     private final VaultProperties.Backfill cfg;
 
-    public BackfillService(JdbcClient jdbc, TransactionTemplate tx, FieldCipher cipher, BlindIndex blindIndex, VaultProperties props) {
+    public BackfillService(JdbcClient jdbc, TransactionTemplate tx, PiiCipher cipher, BlindIndex blindIndex, VaultProperties props) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.cipher = cipher;
@@ -85,19 +86,17 @@ public class BackfillService {
 
     private Encrypted encrypt(Legacy r) {
         if (r.vin() == null) throw new IllegalStateException("vin is null");
-        var key = cipher.newRowKey(r.tenantId(), r.id());
         String vin = BlindIndex.normalize(r.vin());
-        return new Encrypted(r.id(), key.wrapped(), key.encrypt(vin), key.encrypt(r.plate()),
-                key.encrypt(r.ownerName()), blindIndex.vin(r.tenantId(), vin));
+        return new Encrypted(r.id(), cipher.encrypt(r.tenantId(), r.id(), new Pii(vin, r.plate(), r.ownerName())),
+                blindIndex.vin(r.tenantId(), vin));
     }
 
     /** The encrypted_at IS NULL guard makes concurrent runners safe: the loser updates 0 rows. */
     private int apply(Encrypted e) {
         return jdbc.sql("""
-                update vehicles set dek_wrapped = :dek, vin_enc = :vin, plate_enc = :plate, owner_name_enc = :owner,
-                       vin_bidx = :bidx, encrypted_at = now(), vin = null, plate = null, owner_name = null
+                update vehicles set pii_enc = :pii, vin_bidx = :bidx, encrypted_at = now(),
+                       vin = null, plate = null, owner_name = null
                 where id = :id and encrypted_at is null""")
-                .param("dek", e.dek()).param("vin", e.vin()).param("plate", e.plate())
-                .param("owner", e.owner()).param("bidx", e.bidx()).param("id", e.id()).update();
+                .param("pii", e.piiEnc()).param("bidx", e.bidx()).param("id", e.id()).update();
     }
 }

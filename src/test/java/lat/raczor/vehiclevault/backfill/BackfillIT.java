@@ -8,7 +8,8 @@ import javax.sql.DataSource;
 import lat.raczor.vehiclevault.AbstractIntegrationTest;
 import lat.raczor.vehiclevault.config.VaultProperties;
 import lat.raczor.vehiclevault.crypto.BlindIndex;
-import lat.raczor.vehiclevault.crypto.FieldCipher;
+import lat.raczor.vehiclevault.crypto.PiiCipher;
+import lat.raczor.vehiclevault.crypto.PiiCipher.Pii;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -20,13 +21,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 @SpringBootTest
 class BackfillIT extends AbstractIntegrationTest {
 
-    @Autowired FieldCipher cipher;
+    @Autowired PiiCipher cipher;
     @Autowired BlindIndex blindIndex;
 
     /** Same wiring as the backfill profile: connects as backfill_user (BYPASSRLS), small batches, no pause. */
     private BackfillService service() {
         DataSource ds = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "backfill_user", "backfill_user_dev");
-        var props = new VaultProperties(null, null, null, new VaultProperties.Backfill(7, 0));
+        var props = new VaultProperties(null, null, null, new VaultProperties.Backfill(7, 0), null);
         return new BackfillService(JdbcClient.create(ds), new TransactionTemplate(new DataSourceTransactionManager(ds)),
                 cipher, blindIndex, props);
     }
@@ -63,14 +64,13 @@ class BackfillIT extends AbstractIntegrationTest {
         assertThat(count("tenant_id = ? and (vin is not null or plate is not null or owner_name is not null)", tenant)).isZero();
 
         try (var c = owner(); var ps = c.prepareStatement(
-                "select dek_wrapped, plate_enc, owner_name_enc, vin_bidx from vehicles where id = ?")) {
+                "select pii_enc, vin_bidx from vehicles where id = ?")) {
             ps.setObject(1, legacy);
             ResultSet rs = ps.executeQuery();
             rs.next();
-            var key = cipher.openRowKey(rs.getString(1), tenant, legacy);
-            assertThat(key.decrypt(rs.getString(2))).isEqualTo("P123ABC");
-            assertThat(key.decrypt(rs.getString(3))).isEqualTo("Legacy Owner");
-            assertThat(rs.getString(4)).isEqualTo(blindIndex.vin(tenant, "LEGACYVIN0000001"));
+            assertThat(cipher.decrypt(tenant, legacy, rs.getString(1)))
+                    .isEqualTo(new Pii("LEGACYVIN0000001", "P123ABC", "Legacy Owner"));
+            assertThat(rs.getString(2)).isEqualTo(blindIndex.vin(tenant, "LEGACYVIN0000001"));
         }
 
         assertThat(svc.run()).as("second run has nothing left to do").isZero();

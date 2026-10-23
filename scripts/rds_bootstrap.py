@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Create the Postgres roles on the floci RDS instance using the passwords Terraform put in Secrets Manager.
+"""Prepare the floci RDS instance: create the Postgres roles, then run the Flyway migrations as the owner.
 
 Terraform owns the instance and the credentials, docker/initdb-roles.sql owns the role definitions for plain
 compose; on RDS the passwords are random, so this applies the same grants with the secret values.
 
-Usage: python3 scripts/rds_bootstrap.py [--host host.docker.internal] [--port 7001]
+Usage: python3 scripts/rds_bootstrap.py [--host host.docker.internal] [--port 7001] [--skip-migrate]
+
+The passwords come from the secrets Terraform wrote to Secrets Manager. Migrations are a separate step from the
+service on purpose: the service only ever holds the app_user credentials.
 """
 import argparse
 import json
 import subprocess
 import urllib.request
+from pathlib import Path
 
 ENDPOINT = "http://localhost:4566"
 
@@ -35,10 +39,25 @@ def psql(host, port, owner, sql):
     return out.stdout.strip()
 
 
+def migrate(host, port, owner):
+    """Run Flyway as a throwaway container, the same image and flags as the compose migrate service."""
+    sql_dir = Path(__file__).resolve().parent.parent / "src/main/resources/db/migration"
+    out = subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{sql_dir}:/flyway/sql:ro", "flyway/flyway:11",
+         f"-url=jdbc:postgresql://{host}:{port}/{owner['dbname']}", f"-user={owner['username']}",
+         f"-password={owner['password']}", "-locations=filesystem:/flyway/sql",
+         "-postgresql.transactional.lock=false", "-connectRetries=10", "migrate"],
+        capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(out.stdout + out.stderr)
+    print(out.stdout.strip().splitlines()[-1])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="host.docker.internal")
     ap.add_argument("--port", type=int, default=7001)
+    ap.add_argument("--skip-migrate", action="store_true")
     a = ap.parse_args()
     owner, app, backfill = (secret(f"vehicle-vault/db/{n}") for n in ("owner", "app_user", "backfill_user"))
     # Passwords come from Terraform's random_password (alphanumeric), so plain quoting is safe.
@@ -57,6 +76,8 @@ SELECT current_user, version();
 """
     print(psql(a.host, a.port, owner, sql))
     print("roles ready: app_user, backfill_user")
+    if not a.skip_migrate:
+        migrate(a.host, a.port, owner)
 
 
 if __name__ == "__main__":

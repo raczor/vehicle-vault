@@ -88,6 +88,7 @@ footer{padding:30px 0 50px;color:var(--muted);font-size:.9rem;border-top:1px sol
       <a href="#concepts">Concepts</a>
       <a href="#run">Run it</a>
       <a href="#infra">Infra</a>
+      <a href="#architecture">Architecture</a>
       <a href="#limits">Limits</a>
       <a href="https://github.com/raczor/vehicle-vault">GitHub</a>
     </nav>
@@ -153,27 +154,28 @@ CREATE POLICY vehicles_tenant_isolation ON vehicles
         <li><b>It fails closed.</b> If no tenant is set, the setting is empty, the comparison is NULL, and no row matches.</li>
         <li><b>One role is allowed to skip it on purpose.</b> The backfill job uses <code>backfill_user</code> (<code>BYPASSRLS</code>) because it must walk every tenant.</li>
       </ul>
-      <p class="here">In this repo: <code>V4__vehicles_rls.sql</code>, <code>TenantSession.java</code>, and the "RLS fails closed" checks in the integration tests.</p>
+      <p>The tenant is bound <b>automatically</b>: a custom transaction manager runs <code>set_config</code> as every transaction begins, so no service method can forget it. With no authenticated caller nothing is bound, and RLS returns nothing.</p>
+      <p class="here">In this repo: <code>V4__vehicles_rls.sql</code>, <code>TenantBindingTransactionManager.java</code>, and the "RLS fails closed" checks in the integration tests.</p>
     </article>
 
     <article class="concept" id="envelope">
       <h3>Envelope encryption</h3>
       <div class="means"><b>What it means:</b> never encrypt your data with the master key directly. Ask KMS for a fresh <i>data key</i>, encrypt the data with it locally, and store only the <i>wrapped</i> (KMS-encrypted) copy of that key next to the data. To read, ask KMS to unwrap it. The master key never leaves KMS.</div>
+      <p>This repo uses the <b>AWS Encryption SDK</b> rather than hand-written crypto. For each vehicle it produces one self-describing, versioned message that holds VIN, plate and owner name together:</p>
       <ol class="steps">
-        <li>Create a vehicle: <code>GenerateDataKey</code> returns the key in plain and wrapped form.</li>
-        <li>Encrypt VIN, plate and owner name with AES-256-GCM using the plain key, then discard it.</li>
-        <li>Store the ciphertext and the wrapped key (<code>dek_wrapped</code>) in the same row.</li>
-        <li>Read: <code>Decrypt</code> unwraps the key, the service decrypts the fields. A small cache avoids one KMS call per row on lists.</li>
+        <li>Create a vehicle: the SDK calls <code>GenerateDataKey</code>, encrypts locally with AES-256-GCM, and embeds the wrapped key, the algorithm and the encryption context in the message.</li>
+        <li>That one message is stored in the <code>pii_enc</code> column. Nothing else about the key needs storing.</li>
+        <li>Read: the SDK calls <code>Decrypt</code> to unwrap the key, checks the encryption context, and decrypts.</li>
       </ol>
-      <p>One data key per row limits the damage of any single key leaking to that row.</p>
-      <p class="here">In this repo: <code>FieldCipher.java</code>. Users without the <code>vehicle:read-pii</code> permission never trigger a decrypt at all.</p>
+      <p>One data key per row limits the damage of any single key leaking to that row. The SDK enforces a "key commitment" policy, so it refuses weaker, non-committing messages.</p>
+      <p class="here">In this repo: <code>PiiCipher.java</code>. Users without the <code>vehicle:read-pii</code> permission never trigger a decrypt at all.</p>
     </article>
 
     <article class="concept" id="context">
       <h3>Encryption context</h3>
       <div class="means"><b>What it means:</b> extra labels (here <code>tenant</code> and <code>vehicle</code>) that must match exactly at decrypt time. They are not secret, but they bind a ciphertext to the thing it belongs to. KMS records them in its audit logs.</div>
-      <p>The same two labels also go into the AES-GCM "additional authenticated data", so a ciphertext copied into another row or another tenant fails to decrypt. The IAM and key policies can require these labels, which turns "someone used the key with no context" into a denied, logged event.</p>
-      <p class="here">In this repo: <code>FieldCipher.context()</code>, plus the policy conditions in <code>infra/modules/kms</code> and <code>infra/modules/app_access</code>.</p>
+      <p>The SDK authenticates the labels as part of the message and checks them on decrypt, so a ciphertext copied into another row or another tenant fails to decrypt. The IAM and key policies can require these labels, which turns "someone used the key with no context" into a denied, logged event.</p>
+      <p class="here">In this repo: <code>PiiCipher</code> (the context is <code>{tenant, vehicle}</code>), plus the policy conditions in <code>infra/modules/kms</code> and <code>infra/modules/app_access</code>. The SDK's default algorithm suite adds a third context key for signing, so this repo uses the unsigned committing suite to keep the IAM condition exact.</p>
     </article>
 
     <article class="concept" id="blind">
@@ -195,7 +197,7 @@ CREATE POLICY vehicles_tenant_isolation ON vehicles
           <tr><td>VIEWER</td><td>yes</td><td>no</td><td>no</td></tr>
         </tbody>
       </table>
-      <p class="here">In this repo: <code>PolicyDecisionPoint</code>, <code>RolePermissionPolicy</code>. Authentication is a signed JWT carrying <code>tenant_id</code> and <code>roles</code>.</p>
+      <p class="here">In this repo: <code>PolicyDecisionPoint</code>, <code>RolePermissionPolicy</code>. Authentication is a signed JWT carrying <code>tenant_id</code> and <code>roles</code>. With <code>OIDC_JWK_SET_URI</code> set, tokens are validated against an identity provider's public keys, issuer and audience; the shared secret is for local development only. This is tested against a local JWKS server, not a real identity provider.</p>
     </article>
 
     <article class="concept" id="backfill">
@@ -208,6 +210,19 @@ CREATE POLICY vehicles_tenant_isolation ON vehicles
         <li><b>Contract.</b> Only when nothing is pending, a manual script drops the plaintext columns. It refuses to run while any row is unencrypted.</li>
       </ol>
       <p class="here">In this repo: <code>V2</code> and <code>V3</code> migrations, <code>BackfillService.java</code>, <code>db/contract/drop_plaintext.sql</code>.</p>
+    </article>
+
+    <article class="concept" id="migrations">
+      <h3>Migrations as a separate job</h3>
+      <div class="means"><b>What it means:</b> the service that handles requests should not be able to change the schema. Schema changes run as their own job, as the schema owner, before the new service version starts. The service only ever holds the limited <code>app_user</code> credentials.</div>
+      <p class="here">In this repo: the <code>migrate</code> service in <code>compose.yaml</code> (the official Flyway image) and <code>scripts/rds_bootstrap.py</code> for the RDS-in-floci stack. Integration tests still run Flyway inside the app context for speed.</p>
+    </article>
+
+    <article class="concept" id="audit">
+      <h3>Audit log</h3>
+      <div class="means"><b>What it means:</b> a record of who touched sensitive data, never the data itself. Every create and every decrypting read writes one structured line (<code>action</code>, <code>subject</code>, <code>tenant</code>, <code>vehicle</code>) on a dedicated <code>AUDIT</code> logger. Reads by users without PII permission are not logged as PII reads, because nothing was decrypted.</div>
+      <p>This is the application half. Shipping those lines somewhere tamper-resistant, and alerting on them, is infrastructure (see below).</p>
+      <p class="here">In this repo: <code>AuditLog.java</code>, tested in <code>VehicleApiIT</code>.</p>
     </article>
 
     <article class="concept" id="keypolicy">
@@ -280,6 +295,41 @@ curl -s -XPOST localhost:8080/api/vehicles -H "Authorization: Bearer $T" \
     <p>Continuous integration runs <code>verify</code> (all tests), <code>tofu fmt</code>, <code>terragrunt hcl fmt</code> and <code>validate</code> for both environments, CodeQL analysis of the Java and the workflow files, and dependency review. <code>main</code> is protected by a ruleset that requires <code>verify</code>, both CodeQL analyses and dependency review, and blocks high-severity CodeQL alerts. The <code>tofu</code> checks only run when <code>infra/</code> changes, so they are not required.</p>
   </section>
 
+  <section id="architecture">
+    <h2>Architecture: what we have and what is missing</h2>
+    <p class="lede">This is a reference, not a finished platform. The table is honest about which parts are in place, which are partial, and which a real deployment must add.</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Piece</th><th>Status</th><th>Where it stands</th></tr></thead>
+      <tbody>
+        <tr><td>Field encryption</td><td>Have</td><td>AWS Encryption SDK, committing suite, encryption context, one KMS call per decrypt</td></tr>
+        <tr><td>Tenant isolation</td><td>Have</td><td>Postgres RLS, non-owner role, bound automatically per transaction, fails closed</td></tr>
+        <tr><td>Authentication</td><td>Partial</td><td>OIDC mode validates JWKS and issuer (tested locally); no real identity provider is wired in</td></tr>
+        <tr><td>Authorization</td><td>Partial</td><td>One permission interface and role map in code. A policy engine (OPA, Cedar, Verified Permissions) is the next step; the seam exists</td></tr>
+        <tr><td>Key management</td><td>Have</td><td>Two keys, rotation on, key-admin cannot use the key, policy requires the encryption context</td></tr>
+        <tr><td>Migrations</td><td>Have</td><td>Separate Flyway job as the schema owner; expand, migrate, contract pattern</td></tr>
+        <tr><td>Infrastructure as code</td><td>Partial</td><td>Terragrunt and OpenTofu, validated in CI. State is local, and nothing plans or applies from CI</td></tr>
+        <tr><td>Audit</td><td>Partial</td><td>Structured application lines only; not shipped, not tamper-resistant</td></tr>
+        <tr><td>Database credentials</td><td>Partial</td><td>Read from Secrets Manager at startup; no rotation</td></tr>
+        <tr><td>Key replacement</td><td>Missing</td><td>The cipher resolves the alias to one key ARN at startup and decrypts only with it. Automatic annual rotation keeps the key id and is fine; swapping in a brand-new key behind the alias would leave old rows unreadable until both ARNs are accepted</td></tr>
+        <tr><td>Data key caching</td><td>Missing</td><td>Every decrypting read is one KMS <code>Decrypt</code>; a list of 50 rows is 50 calls. Real traffic needs the SDK's caching materials manager and a cost and security decision on its lifetime</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3 style="margin-top:26px">Things a pipeline or the platform must do (not built here)</h3>
+    <div class="grid">
+      <div class="card"><h3>Rotate database passwords</h3><p>Secrets Manager can rotate them on a schedule, using an AWS rotation function for RDS Postgres. The service reads the secret at startup, so it needs a restart or a periodic re-read to pick up a new value. Nothing here schedules that.</p></div>
+      <div class="card"><h3>Rotate the blind-index key</h3><p>The VIN hash key is long-lived. Changing it means recomputing <code>vin_bidx</code> for every row, which is another backfill job, run the same safe way. The key is a config value here; production should keep it in Secrets Manager.</p></div>
+      <div class="card"><h3>Plan and apply from CI</h3><p>Production runs <code>plan</code> on every pull request and <code>apply</code> from a protected pipeline using an assumed role (OIDC from the CI provider), not a developer laptop. State moves to an encrypted S3 bucket with locking. Add drift detection and policy scanning (Checkov or conftest).</p></div>
+      <div class="card"><h3>Ship and watch the audit trail</h3><p>Send the <code>AUDIT</code> lines and CloudTrail to a write-once store, and alarm on denied KMS calls and on unusual volumes of PII reads.</p></div>
+      <div class="card"><h3>Network and database hardening</h3><p>VPC endpoints for KMS and Secrets Manager, IAM database authentication, Multi-AZ, tested restores, TLS enforced in the JDBC URL.</p></div>
+      <div class="card"><h3>Data lifecycle</h3><p>Retention and erasure: deleting a customer's data, and proving it is gone from backups, is a product decision this repo does not make.</p></div>
+      <div class="card"><h3>Supply chain</h3><p>Image signing, an SBOM, and scanning on every build. CodeQL and dependency review are in place; the rest is not.</p></div>
+      <div class="card"><h3>Load and failure testing</h3><p>KMS has request quotas. Test what happens under throttling, and what the service does when KMS is unreachable.</p></div>
+    </div>
+  </section>
+
   <section id="limits">
     <h2>What this does not prove</h2>
     <p class="lede">Read this before trusting the local stack for anything.</p>
@@ -296,7 +346,7 @@ curl -s -XPOST localhost:8080/api/vehicles -H "Authorization: Bearer $T" \
       </tbody>
     </table>
     </div>
-    <p>Other known gaps: the local setup lets the service read the database owner secret so Flyway can migrate (production should run migrations as a separate job), the backfill job has no IAM role of its own yet, and the secrets use the default AWS-managed key instead of a customer-managed one.</p>
+    <p>Other known gaps: the backfill job has no IAM role of its own yet, and the secrets use the default AWS-managed key instead of a customer-managed one.</p>
   </section>
 </main>
 

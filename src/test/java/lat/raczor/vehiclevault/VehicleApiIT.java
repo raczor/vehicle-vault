@@ -11,6 +11,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,13 +24,14 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@ExtendWith(OutputCaptureExtension.class)
 class VehicleApiIT extends AbstractIntegrationTest {
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
 
     private static JwtRequestPostProcessor as(UUID tenant, String role) {
-        return jwt().jwt(j -> j.subject("u").claim("tenant_id", tenant.toString()))
+        return jwt().jwt(j -> j.subject("u-" + role.toLowerCase()).claim("tenant_id", tenant.toString()))
                 .authorities(new SimpleGrantedAuthority("ROLE_" + role));
     }
 
@@ -53,8 +57,8 @@ class VehicleApiIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.ownerName").value("Ana Perez"));
 
         try (var c = owner(); var ps = c.prepareStatement(
-                "select concat_ws('|', vin, plate, owner_name, vin_enc, plate_enc, owner_name_enc), "
-                        + "dek_wrapped is not null, vin_bidx is not null from vehicles where id = ?")) {
+                "select concat_ws('|', vin, plate, owner_name, pii_enc), "
+                        + "pii_enc is not null, vin_bidx is not null from vehicles where id = ?")) {
             ps.setObject(1, UUID.fromString(id));
             ResultSet rs = ps.executeQuery();
             assertThat(rs.next()).isTrue();
@@ -129,5 +133,20 @@ class VehicleApiIT extends AbstractIntegrationTest {
         mvc.perform(post("/api/vehicles").header("Authorization", "Bearer " + viewer)
                 .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isForbidden());
         mvc.perform(get("/api/vehicles").header("Authorization", "Bearer " + manager + "x")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void piiAccessIsAuditedAndNonPiiReadsAreNot(CapturedOutput output) throws Exception {
+        UUID tenant = UUID.randomUUID();
+        String id = create(tenant);
+        assertThat(output.getAll()).contains("action=vehicle.create subject=u-manager tenant=" + tenant)
+                .doesNotContain("action=vehicle.pii.read"); // creating is not reading
+
+        mvc.perform(get("/api/vehicles/" + id).with(as(tenant, "VIEWER"))).andExpect(status().isOk());
+        assertThat(output.getAll()).doesNotContain("action=vehicle.pii.read subject=u-viewer");
+
+        mvc.perform(get("/api/vehicles/" + id).with(as(tenant, "MANAGER"))).andExpect(status().isOk());
+        assertThat(output.getAll()).contains("action=vehicle.pii.read subject=u-manager tenant=" + tenant + " vehicle=" + id)
+                .doesNotContain("1HGCM82633A004352");
     }
 }
