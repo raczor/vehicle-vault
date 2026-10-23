@@ -80,3 +80,44 @@ export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_DOCKE
 ```
 
 GitHub Actions: `ci.yml` (`mvn verify`), `codeql.yml` (CodeQL, `security-extended`), `dependency-review.yml` (blocks PRs adding high-severity vulnerable dependencies), and Dependabot for Maven, Docker and Actions. Secret scanning and push protection are repository settings.
+
+## Infrastructure as code (OpenTofu / Terraform)
+
+`infra/` builds the AWS pieces with [OpenTofu](https://opentofu.org) (same HCL as Terraform: `brew install opentofu`). The same modules apply to **floci** locally and to real AWS.
+
+```
+infra/
+  modules/
+    iam/         app role (assumed by the service) and key-admin role (manages the key, can never use it)
+    kms/         customer managed key + alias, rotation on, a key policy with three statements (see below)
+    app_access/  least-privilege IAM policies attached to those roles
+    network/     VPC, two private subnets, security groups (db reachable only from the app group)
+    database/    RDS Postgres 17, parameter group (force TLS, log DDL), 3 Secrets Manager secrets
+  envs/
+    local/       floci endpoints, short deletion windows, no deletion protection
+    aws/         real provider, 30 day key deletion window, deletion protection, 7 day backups (validate only)
+```
+
+Run the whole thing locally:
+
+```bash
+export COMPOSE_FILE=compose.yaml:compose.aws.yaml   # opt-in: mounts the Docker socket so floci can start RDS
+docker compose up -d floci
+cd infra/envs/local && tofu init && tofu apply   # key, roles, policies, VPC, RDS, secrets
+cd ../../.. && python3 scripts/rds_bootstrap.py  # creates app_user / backfill_user with the secret passwords
+docker compose --profile aws up -d --build app-aws   # Flyway creates the tables on that RDS instance
+python3 scripts/smoke.py --aws                   # the same 18 end-to-end checks, against this stack
+```
+
+What each layer teaches:
+
+- **Key policy vs IAM policy.** KMS needs *both* to allow an action. The key policy (`modules/kms`) does three things: delegates to IAM (`EnableIamPolicies`), hard-denies the admin role any cryptographic use (`AdminsCannotUseTheKey`, separation of duties), and denies `Decrypt`/`GenerateDataKey` when no encryption context is sent (`RequireEncryptionContext`). The IAM policy (`modules/app_access`) gives the service only those two actions, on that one key, and only when the context keys are exactly `tenant` and `vehicle`, the same keys `FieldCipher` sends.
+- **Two keys.** The PII key encrypts fields. A separate key encrypts the RDS volume and snapshots. Compromising or losing one does not affect the other.
+- **Terraform owns infrastructure, Flyway owns schema.** Terraform creates the instance and credentials; the `vehicles` table, indexes and RLS policy come from `src/main/resources/db/migration` when the app starts. Postgres roles are applied by `scripts/rds_bootstrap.py` (floci) or `docker/initdb-roles.sql` (plain compose).
+- **Credentials from Secrets Manager.** Terraform generates the passwords (`random_password`) and stores them as JSON secrets, one per role. With `DB_SECRET_ID` / `FLYWAY_SECRET_ID` set, the app reads them at startup (`SecretsManagerEnvironmentPostProcessor`), which is exactly what the `ReadOwnSecrets` IAM statement permits. Note the state file also contains the passwords: in real use put state in an encrypted remote backend.
+
+**What floci does NOT do** (so you do not learn the wrong lesson): it stores key policies and IAM policies but does not enforce them. A `GenerateDataKey` without an encryption context succeeds locally and would be denied by real AWS. Treat the local stack as a way to check that the resources and the app wiring work, and use real AWS (or the IAM policy simulator) to verify that permissions deny what they should. `envs/aws` is validated in CI but never applied by this repo.
+
+Before pointing the service at real RDS: the parameter group sets `rds.force_ssl=1`, so the JDBC URL needs `?sslmode=require` (or `verify-full` with the RDS CA bundle). Floci does not enforce TLS, so the local stack will not warn you. The app security group also needs outbound 443 to KMS and Secrets Manager (or VPC endpoints); only the 5432 path to the database is created here.
+
+Who reads which secret: the `app` role's IAM policy grants only the `app_user` secret. The local `app-aws` service also reads the `owner` secret so Flyway can migrate at startup, which is a shortcut. In real AWS run migrations as a separate pipeline step or job with its own role allowed to read `owner`, and give the one-off backfill job its own role for the `backfill_user` secret. Neither is created here.

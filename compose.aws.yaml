@@ -1,0 +1,12 @@
+# Opt-in override for "aws" mode: lets floci start real RDS containers.
+# Mounting the Docker socket gives floci control of the Docker daemon (root-equivalent inside the VM), so it is
+# NOT part of the default compose file. Use:  export COMPOSE_FILE=compose.yaml:compose.aws.yaml
+services:
+  floci:
+    ports:
+      - "127.0.0.1:4566:4566"
+      - "127.0.0.1:7001-7010:7001-7010"   # floci proxies RDS instances on these ports
+    environment:
+      FLOCI_HOSTNAME: floci
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
