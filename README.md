@@ -83,33 +83,43 @@ export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_DOCKE
 
 GitHub Actions: `ci.yml` (`mvn verify`), `codeql.yml` (CodeQL, `security-extended`), `dependency-review.yml` (blocks PRs adding high-severity vulnerable dependencies), and Dependabot for Maven, Docker and Actions. Secret scanning and push protection are repository settings.
 
-## Infrastructure as code (OpenTofu / Terraform)
+## Infrastructure as code (OpenTofu + Terragrunt)
 
-`infra/` builds the AWS pieces with [OpenTofu](https://opentofu.org) (same HCL as Terraform: `brew install opentofu`). The same modules apply to **floci** locally and to real AWS.
+`infra/` builds the AWS pieces with [OpenTofu](https://opentofu.org) (same HCL as Terraform), organised with [Terragrunt](https://terragrunt.gruntwork.io) so each component is defined once and each environment only supplies what differs. The same modules apply to **floci** locally and to real AWS.
+
+```bash
+brew install opentofu terragrunt
+```
 
 ```
 infra/
-  modules/
-    iam/         app role (assumed by the service) and key-admin role (manages the key, can never use it)
-    kms/         customer managed key + alias, rotation on, a key policy with three statements (see below)
-    app_access/  least-privilege IAM policies attached to those roles
-    network/     VPC, two private subnets, security groups (db reachable only from the app group)
-    database/    RDS Postgres 17, parameter group (force TLS, log DDL), 3 Secrets Manager secrets
-  envs/
-    local/       floci endpoints, short deletion windows, no deletion protection
-    aws/         real provider, 30 day key deletion window, deletion protection, 7 day backups (validate only)
+  modules/               plain OpenTofu modules (the building blocks)
+    iam/                 app role (assumed by the service) and key-admin role (manages the key, can never use it)
+    kms/                 customer managed key + alias, rotation on, a key policy with three statements (see below)
+    app_access/          least-privilege IAM policies attached to those roles
+    network/             VPC, two private subnets, security groups (db reachable only from the app group)
+    database/            RDS Postgres 17, parameter group (force TLS, log DDL), 3 Secrets Manager secrets
+  terragrunt/
+    root.hcl             generates provider, versions and state config for every unit; pins the tofu binary
+    _envcommon/          each component defined once: module source, dependencies, inputs
+    local/               floci: env.hcl (endpoints, short deletion windows) + one 6-line leaf per component
+    aws/                 real AWS: env.hcl (30 day key deletion, deletion protection, 7 day backups) + leaves
 ```
+
+How it fits: a leaf like `local/database/terragrunt.hcl` only says "include `root.hcl` and `_envcommon/database.hcl`". `_envcommon/database.hcl` names the module, declares `dependency` blocks on `network` and `rds-key`, and maps their outputs to inputs. Terragrunt reads those dependencies to apply in the right order (iam, then network and the keys in parallel, then database, then app-access), and each leaf keeps its own small state file. Everything that differs between environments is in `env.hcl`.
 
 Run the whole thing locally:
 
 ```bash
 export COMPOSE_FILE=compose.yaml:compose.aws.yaml   # opt-in: mounts the Docker socket so floci can start RDS
 docker compose up -d floci
-cd infra/envs/local && tofu init && tofu apply   # key, roles, policies, VPC, RDS, secrets
-cd ../../.. && python3 scripts/rds_bootstrap.py  # creates app_user / backfill_user with the secret passwords
-docker compose --profile aws up -d --build app-aws   # Flyway creates the tables on that RDS instance
-python3 scripts/smoke.py --aws                   # the same 18 end-to-end checks, against this stack
+(cd infra/terragrunt/local && terragrunt run --all apply)   # key, roles, policies, VPC, RDS, secrets
+python3 scripts/rds_bootstrap.py                    # creates app_user / backfill_user with the secret passwords
+docker compose --profile aws up -d --build app-aws  # Flyway creates the tables on that RDS instance
+python3 scripts/smoke.py --aws                      # the same 18 end-to-end checks, against this stack
 ```
+
+Useful variations: `terragrunt run --all plan`, `terragrunt run --all destroy`, or run one component with `cd infra/terragrunt/local/pii-key && terragrunt apply` (its dependencies must already be applied). For `aws/`, `AWS_ACCOUNT_ID` is required (there is deliberately no default, so a wrong account cannot slip into the key policy) and `AWS_REGION` defaults to `us-east-1`. CI sets a placeholder account id because `validate` never calls AWS.
 
 What each layer teaches:
 

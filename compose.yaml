@@ -48,7 +48,7 @@ services:
 
   # --- "aws" mode: the same service against what Terraform built in floci (RDS, KMS key, Secrets Manager). ---
   # export COMPOSE_FILE=compose.yaml:compose.aws.yaml   (adds the Docker socket floci needs for RDS)
-  # docker compose up -d floci && (cd infra/envs/local && tofu apply) && python3 scripts/rds_bootstrap.py
+  # docker compose up -d floci && (cd infra/terragrunt/local && terragrunt run --all apply) && python3 scripts/rds_bootstrap.py
   # docker compose --profile aws up -d --build app-aws
   app-aws:
     <<: *app

@@ -104,7 +104,7 @@ footer{padding:30px 0 50px;color:var(--muted);font-size:.9rem;border-top:1px sol
       <span class="pill">Postgres row-level security</span>
       <span class="pill">Central authorization</span>
       <span class="pill">Zero-downtime backfill</span>
-      <span class="pill">OpenTofu on floci</span>
+      <span class="pill">OpenTofu + Terragrunt on floci</span>
     </div>
   </div>
 
@@ -256,25 +256,28 @@ curl -s -XPOST localhost:8080/api/vehicles -H "Authorization: Bearer $T" \
 
   <section id="infra">
     <h2>Infrastructure walkthrough</h2>
-    <p class="lede">The AWS side is built with <a href="https://opentofu.org">OpenTofu</a> (same language as Terraform). The same modules apply to floci locally and to real AWS.</p>
+    <p class="lede">The AWS side is built with <a href="https://opentofu.org">OpenTofu</a> (same language as Terraform) and organised with <a href="https://terragrunt.gruntwork.io">Terragrunt</a>, so each component is defined once and each environment only supplies what differs. The same modules apply to floci locally and to real AWS.</p>
 <pre><code>infra/
-  modules/
-    iam/          app role (the service) and key-admin role (manages, never uses)
-    kms/          key + alias, rotation on, three-statement key policy
-    app_access/   least-privilege IAM policies for those roles
-    network/      VPC, 2 private subnets, security groups (db reachable only from the app group)
-    database/     RDS Postgres 17, TLS-forcing parameter group, 3 Secrets Manager secrets
-  envs/
-    local/        floci endpoints, short deletion windows
-    aws/          real provider, 30-day key deletion window, deletion protection (validated only)</code></pre>
+  modules/              plain OpenTofu modules (the building blocks)
+    iam/                app role (the service) and key-admin role (manages, never uses)
+    kms/                key + alias, rotation on, three-statement key policy
+    app_access/         least-privilege IAM policies for those roles
+    network/            VPC, 2 private subnets, security groups (db reachable only from the app group)
+    database/           RDS Postgres 17, TLS-forcing parameter group, 3 Secrets Manager secrets
+  terragrunt/
+    root.hcl            generates provider, versions and state config for every unit
+    _envcommon/         each component defined once: module, dependencies, inputs
+    local/              floci: env.hcl + one 6-line leaf per component
+    aws/                real AWS: env.hcl (30-day key deletion, deletion protection) + leaves</code></pre>
+    <p>A leaf only says "include <code>root.hcl</code> and the shared component". The shared component declares <code>dependency</code> blocks (for example the database needs the network and the RDS key), and Terragrunt uses them to apply in the right order, with a small state file per component. Install with <code>brew install opentofu terragrunt</code>.</p>
     <ol class="steps">
       <li><b>Start floci with RDS support.</b> <code>export COMPOSE_FILE=compose.yaml:compose.aws.yaml</code> then <code>docker compose up -d floci</code>. The override mounts the Docker socket so floci can start a real Postgres container.</li>
-      <li><b>Apply the infrastructure.</b> <code>cd infra/envs/local &amp;&amp; tofu init &amp;&amp; tofu apply</code>. Creates the key, roles, policies, network, database and secrets.</li>
+      <li><b>Apply the infrastructure.</b> <code>cd infra/terragrunt/local &amp;&amp; terragrunt run --all apply</code>. Creates the key, roles, policies, network, database and secrets.</li>
       <li><b>Create the database roles.</b> <code>python3 scripts/rds_bootstrap.py</code> reads the passwords from Secrets Manager and creates <code>app_user</code> and <code>backfill_user</code>.</li>
       <li><b>Start the service against it.</b> <code>docker compose --profile aws up -d --build app-aws</code>. It reads its credentials from Secrets Manager, and Flyway creates the tables on the RDS instance.</li>
       <li><b>Check it.</b> <code>python3 scripts/smoke.py --aws</code> runs the same 18 checks against this stack.</li>
     </ol>
-    <p>Continuous integration runs <code>verify</code> (all tests), <code>tofu fmt</code> and <code>validate</code> for both environments, CodeQL analysis of the Java and the workflow files, and dependency review. <code>main</code> is protected by a ruleset that requires <code>verify</code>, both CodeQL analyses and dependency review, and blocks high-severity CodeQL alerts. The <code>tofu</code> checks only run when <code>infra/</code> changes, so they are not required.</p>
+    <p>Continuous integration runs <code>verify</code> (all tests), <code>tofu fmt</code>, <code>terragrunt hcl fmt</code> and <code>validate</code> for both environments, CodeQL analysis of the Java and the workflow files, and dependency review. <code>main</code> is protected by a ruleset that requires <code>verify</code>, both CodeQL analyses and dependency review, and blocks high-severity CodeQL alerts. The <code>tofu</code> checks only run when <code>infra/</code> changes, so they are not required.</p>
   </section>
 
   <section id="limits">
